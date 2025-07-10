@@ -39,20 +39,54 @@ def generate_advice_agent(query, relevant_chunks, model):
     )
     return answer['response']
 
+# def generate_csv_file(transcript, model):
+#     name_customer = ollama.generate(
+#         model=model,
+#         prompt=f'{transcript} Look at this conversation and ONLY AND ONLY GIVE ME THE NAME OF THE CUSTOMER.'
+#     )
+#     name_customer = re.sub(r"<think>.*?</think>", "", name_customer['response'], flags=re.DOTALL)
+
+#     conv_summary = ollama.generate(
+#         model=model,
+#         prompt=f'{transcript} Look at this conversation and summarize the conversation in not more than 5 lines.'
+#     )
+#     conv_summary = re.sub(r"<think>.*?</think>", "", conv_summary['response'], flags=re.DOTALL)
+
+#     return name_customer.strip(), conv_summary.strip()
+
+import os
+import csv
+import re
+import ollama
+
 def generate_csv_file(transcript, model):
+    # Extract customer name
     name_customer = ollama.generate(
         model=model,
         prompt=f'{transcript} Look at this conversation and ONLY AND ONLY GIVE ME THE NAME OF THE CUSTOMER.'
     )
-    name_customer = re.sub(r"<think>.*?</think>", "", name_customer['response'], flags=re.DOTALL)
+    name_customer = re.sub(r"<think>.*?</think>", "", name_customer['response'], flags=re.DOTALL).strip()
 
+    # Generate summary
     conv_summary = ollama.generate(
         model=model,
         prompt=f'{transcript} Look at this conversation and summarize the conversation in not more than 5 lines.'
     )
-    conv_summary = re.sub(r"<think>.*?</think>", "", conv_summary['response'], flags=re.DOTALL)
+    conv_summary = re.sub(r"<think>.*?</think>", "", conv_summary['response'], flags=re.DOTALL).strip()
 
-    return name_customer.strip(), conv_summary.strip()
+    # Create output folder
+    os.makedirs("csv_outputs", exist_ok=True)
+    filename = f"{name_customer.replace(' ', '_')}_summary.csv"
+    filepath = os.path.join("csv_outputs", filename)
+
+    # Write to CSV
+    with open(filepath, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Customer Name", "Conversation Summary"])
+        writer.writerow([name_customer, conv_summary])
+
+    return filename, filepath
+
 
 def delete_all_files(folder_path):
     if not os.path.isdir(folder_path):

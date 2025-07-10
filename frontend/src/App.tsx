@@ -1,76 +1,102 @@
+// src/App.tsx
 import React, { useState, useRef, useEffect } from "react";
 
-const WS_URL     = "/ws/audio";
-const ADVICE_URL = "/api/advice";
+const WS_URL               = "/ws/audio";
+const ADVICE_URL           = "/api/advice";
+const SATISFACTION_URL     = "/api/satisfaction-score";
+const SUMMARY_URL          = "/api/summary";
+const PDF_UPLOAD_URL       = "/api/upload-pdf";
+
+const buttonStyle: React.CSSProperties = {
+  background: "#3b82f6",
+  color: "#fff",
+  border: "none",
+  borderRadius: "6px",
+  padding: "0.5rem 1rem",
+  cursor: "pointer",
+  fontWeight: "bold",
+};
 
 export default function App() {
+  // ─── State ──────────────────────────────────────────────────────────────
   const [recording,  setRecording]  = useState(false);
   const [transcript, setTranscript] = useState("");
   const [advice,     setAdvice]     = useState("");
+  const [score,      setScore]      = useState<number|null>(null);
+  const [summary,    setSummary]    = useState("");
+  const [csvName,    setCsvName]    = useState("");
+  const [pdfStatus,  setPdfStatus]  = useState("");
 
+  // ─── Refs ────────────────────────────────────────────────────────────────
   const wsRef          = useRef<WebSocket|null>(null);
   const audioCtxRef    = useRef<AudioContext|null>(null);
   const processorRef   = useRef<ScriptProcessorNode|null>(null);
   const sourceRef      = useRef<MediaStreamAudioSourceNode|null>(null);
-  const adviceTimerRef = useRef<number|undefined>(undefined);
 
-  // Advice polling every 2s
+  // ─── Advice on every transcript change ───────────────────────────────────
   useEffect(() => {
-    if (!recording) return;
-    adviceTimerRef.current = window.setInterval(async () => {
-      const text = transcript.trim();
-      if (!text) return;
+    if (!recording || !transcript) return;
+
+    const fetchAdvice = async () => {
       try {
         const res = await fetch(ADVICE_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: text }),
+          body: JSON.stringify({ transcript }),
         });
         const { advice: newAdvice } = await res.json();
         setAdvice(newAdvice);
       } catch (err) {
         console.error("Advice error:", err);
       }
-    }, 2000);
-
-    return () => {
-      if (adviceTimerRef.current) {
-        clearInterval(adviceTimerRef.current);
-        adviceTimerRef.current = undefined;
-      }
     };
+
+    fetchAdvice();
   }, [recording, transcript]);
 
-  const start = async () => {
-    setTranscript("");
-    setAdvice("");
-
-    // — WebSocket setup —
+  // ─── WebSocket setup: only final transcripts ─────────────────────────────
+  useEffect(() => {
+    if (!recording) return;
     const ws = new WebSocket(WS_URL);
     ws.binaryType = "arraybuffer";
-    ws.onopen    = () => console.debug("WS open");
-    ws.onmessage = (e) => {
+
+    ws.onopen = () => console.debug("WS open");
+    ws.onmessage = e => {
       try {
         const msg = JSON.parse(e.data.toString());
-        if (msg.type === "transcript") {
-          setTranscript(t => t + " " + msg.text);
+        // only show final results
+        if (msg.type === "transcript" && msg.is_partial === false) {
+          setTranscript(t => t + "\n" + msg.text);
         }
       } catch {}
     };
-    ws.onerror = (err) => console.error("WS error:", err);
+    ws.onerror = err => console.error("WS error:", err);
     ws.onclose = () => console.debug("WS closed");
-    wsRef.current = ws;
 
-    // — Audio capture @16kHz via ScriptProcessorNode —
+    wsRef.current = ws;
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [recording]);
+
+  // ─── Start streaming mic → WS ──────────────────────────────────────────
+  const start = async () => {
+    setTranscript("");
+    setAdvice("");
+    setScore(null);
+    setSummary("");
+    setCsvName("");
+    setPdfStatus("");
+
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const AudioCtxClass = (window.AudioContext ||
-                           (window as any).webkitAudioContext);
-    const ac = new AudioCtxClass({ sampleRate: 16000 });
+    const AudioCtx = (window.AudioContext || (window as any).webkitAudioContext);
+    const ac = new AudioCtx({ sampleRate: 16000 });
     audioCtxRef.current = ac;
 
     const src  = ac.createMediaStreamSource(stream);
     const proc = ac.createScriptProcessor(4096, 1, 1);
-    sourceRef.current   = src;
+    sourceRef.current    = src;
     processorRef.current = proc;
 
     proc.onaudioprocess = ev => {
@@ -80,8 +106,8 @@ export default function App() {
         const s = Math.max(-1, Math.min(1, buf[i]));
         pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(pcm.buffer);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(pcm.buffer);
       }
     };
 
@@ -91,8 +117,8 @@ export default function App() {
     setRecording(true);
   };
 
+  // ─── Stop streaming ───────────────────────────────────────────────────
   const stop = () => {
-    // tear down
     processorRef.current?.disconnect();
     sourceRef.current?.disconnect();
     audioCtxRef.current?.close();
@@ -104,113 +130,158 @@ export default function App() {
     setRecording(false);
   };
 
+  // ─── Other API handlers ───────────────────────────────────────────────
+  const handleScore = async () => {
+    try {
+      const res = await fetch(SATISFACTION_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+      const { score } = await res.json();
+      setScore(score);
+    } catch (err) {
+      console.error("Satisfaction error:", err);
+    }
+  };
+
+  // const handleSummary = async () => {
+  //   try {
+  //     const res = await fetch(SUMMARY_URL, {
+  //       method: "POST",
+  //       headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify({ transcript }),
+  //     });
+  //     const { name, summary } = await res.json();
+  //     setCsvName(name);
+  //     setSummary(summary);
+  //   } catch (err) {
+  //     console.error("Summary error:", err);
+  //   }
+  // };
+
+  const handleSummary = async () => {
+    try {
+      const res = await fetch("/api/summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ transcript })
+      });
+  
+      if (!res.ok) throw new Error("Failed to fetch summary");
+  
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+  
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "summary.csv";  // optional: use dynamic filename
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Download failed:", err);
+    }
+  };
+  
+
+  const handlePDFUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch(PDF_UPLOAD_URL, { method: "POST", body: formData });
+      const { status } = await res.json();
+      setPdfStatus(status);
+    } catch (err) {
+      console.error("PDF upload error:", err);
+      setPdfStatus("Failed");
+    }
+  };
+
+  // ─── Render ────────────────────────────────────────────────────────────
   return (
     <div style={{
       display: "flex",
-      flexDirection: "column",
       height: "100vh",
-      margin: 0,
-      fontFamily: "system-ui, sans-serif",
       background: "#1e1e2e",
       color: "#e0e0e0",
+      overflow: "hidden",
     }}>
-      {/* HEADER */}
-      <header style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "1rem 2rem",
-        background: "#26263a",
-        boxShadow: "0 2px 4px rgba(0,0,0,0.6)",
-      }}>
-        <h1 style={{ margin: 0, fontSize: "1.5rem" }}>
-          Customer Care Assistant
-        </h1>
-        {recording ? (
-          <button
-            onClick={stop}
-            style={{
-              background: "#e53e3e",
-              color: "#fff",
-              border: "none",
-              borderRadius: "6px",
-              padding: "0.5rem 1rem",
-              cursor: "pointer",
-            }}
-          >
-            ⏹ Stop
-          </button>
-        ) : (
-          <button
-            onClick={start}
-            style={{
-              background: "#38a169",
-              color: "#fff",
-              border: "none",
-              borderRadius: "6px",
-              padding: "0.5rem 1rem",
-              cursor: "pointer",
-            }}
-          >
-            ▶ Start
-          </button>
-        )}
-      </header>
-
-      {/* MAIN CONTENT */}
       <div style={{
-        display: "flex",
         flex: 1,
-        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        padding: 20,
       }}>
-        {/* TRANSCRIPTION PANEL */}
-        <div style={{
-          flex: 1,
-          padding: "1rem",
+        <header style={{
           display: "flex",
-          flexDirection: "column"
+          justifyContent: "space-between",
+          alignItems: "center",
         }}>
-          <h2 style={{ marginBottom: "0.5rem" }}>Transcription</h2>
-          <div style={{
-            flex: 1,
-            background: "#2a2a3e",
-            border: "1px solid #3c3c5a",
-            borderRadius: "8px",
-            padding: "1rem",
-            overflowY: "auto",
-            whiteSpace: "pre-wrap",
-            fontFamily: "monospace",
-            lineHeight: 1.5,
-          }}>
-            {transcript}
-          </div>
+          <h1>Customer Care Assistant</h1>
+          {recording
+            ? <button onClick={stop} style={{ background: "#e53e3e", color: "#fff", ...buttonStyle }}>Stop</button>
+            : <button onClick={start} style={{ background: "#38a169", color: "#fff", ...buttonStyle }}>Start</button>
+          }
+        </header>
+
+        <pre style={{
+          flex: 1,
+          marginTop: 20,
+          background: "#2a2a3e",
+          padding: 10,
+          borderRadius: 6,
+          overflowY: "auto",
+          whiteSpace: "pre-wrap",
+          fontFamily: "monospace",
+        }}>
+          {transcript}
+        </pre>
+
+        <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={handleScore} style={buttonStyle}>🎯 Satisfaction Score</button>
+          <button onClick={handleSummary} style={buttonStyle}>🧾 CSV Summary</button>
+          <label style={{ ...buttonStyle, cursor: "pointer" }}>
+            📄 Upload PDF
+            <input type="file" onChange={handlePDFUpload} style={{ display: "none" }} />
+          </label>
         </div>
 
-        {/* ADVICE SIDEBAR */}
-        <aside style={{
-          width: "300px",
-          padding: "1rem",
-          background: "#26263a",
-          borderLeft: "1px solid #3c3c5a",
-          display: "flex",
-          flexDirection: "column"
-        }}>
-          <h2 style={{ marginBottom: "0.5rem" }}>Advice</h2>
-          <div style={{
-            flex: 1,
-            background: "#1f1f2e",
-            border: "1px solid #3c3c5a",
-            borderRadius: "8px",
-            padding: "1rem",
-            overflowY: "auto",
-            whiteSpace: "pre-wrap",
-            fontFamily: "monospace",
-            lineHeight: 1.5,
-          }}>
-            {advice}
-          </div>
-        </aside>
+        <div style={{ marginTop: 12 }}>
+          {score    !== null && <div>📊 Score: <strong>{score}</strong></div>}
+          {csvName  && <div>🧾 CSV: <code>{csvName}</code></div>}
+          {summary  && <div>📌 Summary: <em>{summary}</em></div>}
+          {pdfStatus && <div>📥 PDF Upload: <strong>{pdfStatus}</strong></div>}
+        </div>
       </div>
+
+      <aside style={{
+        width: 300,
+        borderLeft: "1px solid #333",
+        padding: 20,
+        display: "flex",
+        flexDirection: "column",
+        background: "#26263a",
+      }}>
+        <h2>Advice</h2>
+        <div style={{
+          flex: 1,
+          background: "#1f1f2e",
+          padding: 10,
+          borderRadius: 6,
+          overflowY: "auto",
+          whiteSpace: "pre-wrap",
+          fontFamily: "monospace",
+          lineHeight: 1.4,
+        }}>
+          {advice}
+        </div>
+      </aside>
     </div>
   );
 }
