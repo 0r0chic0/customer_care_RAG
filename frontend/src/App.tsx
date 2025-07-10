@@ -1,11 +1,10 @@
-// src/App.tsx
 import React, { useState, useRef, useEffect } from "react";
 
-const WS_URL               = "/ws/audio";
-const ADVICE_URL           = "/api/advice";
-const SATISFACTION_URL     = "/api/satisfaction-score";
-const SUMMARY_URL          = "/api/summary";
-const PDF_UPLOAD_URL       = "/api/upload-pdf";
+const WS_URL           = "/ws/audio";
+const ADVICE_URL       = "/api/advice";
+const SATISFACTION_URL = "/api/satisfaction-score";
+const SUMMARY_URL      = "/api/summary";
+const PDF_UPLOAD_URL   = "/api/upload-pdf";
 
 const buttonStyle: React.CSSProperties = {
   background: "#3b82f6",
@@ -19,40 +18,54 @@ const buttonStyle: React.CSSProperties = {
 
 export default function App() {
   // ─── State ──────────────────────────────────────────────────────────────
-  const [recording,  setRecording]  = useState(false);
+  const [recording, setRecording]   = useState(false);
   const [transcript, setTranscript] = useState("");
-  const [advice,     setAdvice]     = useState("");
-  const [score,      setScore]      = useState<number|null>(null);
-  const [summary,    setSummary]    = useState("");
-  const [csvName,    setCsvName]    = useState("");
-  const [pdfStatus,  setPdfStatus]  = useState("");
+  const [advice, setAdvice]         = useState("");
+  const [score, setScore]           = useState<number | null>(null);
+  const [summary, setSummary]       = useState("");
+  const [csvName, setCsvName]       = useState("");
+  const [pdfStatus, setPdfStatus]   = useState("");
 
   // ─── Refs ────────────────────────────────────────────────────────────────
-  const wsRef          = useRef<WebSocket|null>(null);
-  const audioCtxRef    = useRef<AudioContext|null>(null);
-  const processorRef   = useRef<ScriptProcessorNode|null>(null);
-  const sourceRef      = useRef<MediaStreamAudioSourceNode|null>(null);
+  const wsRef        = useRef<WebSocket | null>(null);
+  const audioCtxRef  = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef    = useRef<MediaStreamAudioSourceNode | null>(null);
 
-  // ─── Advice on every transcript change ───────────────────────────────────
+  // Keep latest transcript for interval callback
+  const transcriptRef  = useRef(transcript);
+  const adviceTimerRef = useRef<number | null>(null);
+
+  // Update transcriptRef on transcript change
   useEffect(() => {
-    if (!recording || !transcript) return;
+    transcriptRef.current = transcript;
+  }, [transcript]);
 
-    const fetchAdvice = async () => {
-      try {
-        const res = await fetch(ADVICE_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript }),
-        });
-        const { advice: newAdvice } = await res.json();
-        setAdvice(newAdvice);
-      } catch (err) {
-        console.error("Advice error:", err);
+  // ─── Advice polling every 10 seconds ─────────────────────────────────────
+  useEffect(() => {
+    if (recording && adviceTimerRef.current === null) {
+      adviceTimerRef.current = window.setInterval(async () => {
+        try {
+          const res = await fetch(ADVICE_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ transcript: transcriptRef.current }),
+          });
+          if (!res.ok) throw new Error("Advice fetch failed");
+          const { advice: newAdvice } = await res.json();
+          setAdvice(newAdvice);
+        } catch (err) {
+          console.error("Advice error:", err);
+        }
+      }, 20000); // every 10 seconds
+    }
+    return () => {
+      if (adviceTimerRef.current !== null) {
+        window.clearInterval(adviceTimerRef.current);
+        adviceTimerRef.current = null;
       }
     };
-
-    fetchAdvice();
-  }, [recording, transcript]);
+  }, [recording]);
 
   // ─── WebSocket setup: only final transcripts ─────────────────────────────
   useEffect(() => {
@@ -64,8 +77,7 @@ export default function App() {
     ws.onmessage = e => {
       try {
         const msg = JSON.parse(e.data.toString());
-        // only show final results
-        if (msg.type === "transcript" && msg.is_partial === false) {
+        if (msg.type === "transcript" && !msg.is_partial) {
           setTranscript(t => t + "\n" + msg.text);
         }
       } catch {}
@@ -123,14 +135,16 @@ export default function App() {
     sourceRef.current?.disconnect();
     audioCtxRef.current?.close();
 
-    wsRef.current?.send(JSON.stringify({ event: "EOS" }));
-    wsRef.current?.close();
-    wsRef.current = null;
+    if (wsRef.current) {
+      wsRef.current.send(JSON.stringify({ event: "EOS" }));
+      wsRef.current.close();
+      wsRef.current = null;
+    }
 
     setRecording(false);
   };
 
-  // ─── Other API handlers ───────────────────────────────────────────────
+  // ─── Satisfaction Score ──────────────────────────────────────────────────
   const handleScore = async () => {
     try {
       const res = await fetch(SATISFACTION_URL, {
@@ -145,39 +159,20 @@ export default function App() {
     }
   };
 
-  // const handleSummary = async () => {
-  //   try {
-  //     const res = await fetch(SUMMARY_URL, {
-  //       method: "POST",
-  //       headers: { "Content-Type": "application/json" },
-  //       body: JSON.stringify({ transcript }),
-  //     });
-  //     const { name, summary } = await res.json();
-  //     setCsvName(name);
-  //     setSummary(summary);
-  //   } catch (err) {
-  //     console.error("Summary error:", err);
-  //   }
-  // };
-
+  // ─── Summary CSV ─────────────────────────────────────────────────────────
   const handleSummary = async () => {
     try {
-      const res = await fetch("/api/summary", {
+      const res = await fetch(SUMMARY_URL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ transcript })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
       });
-  
       if (!res.ok) throw new Error("Failed to fetch summary");
-  
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
-  
       const a = document.createElement("a");
       a.href = url;
-      a.download = "summary.csv";  // optional: use dynamic filename
+      a.download = "summary.csv";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -186,8 +181,8 @@ export default function App() {
       console.error("Download failed:", err);
     }
   };
-  
 
+  // ─── PDF Upload ──────────────────────────────────────────────────────────
   const handlePDFUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -212,21 +207,12 @@ export default function App() {
       color: "#e0e0e0",
       overflow: "hidden",
     }}>
-      <div style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        padding: 20,
-      }}>
-        <header style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}>
-          <h1>Customer Care Assistant</h1>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 20 }}>
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h1>SOUNDAdvice</h1>
           {recording
-            ? <button onClick={stop} style={{ background: "#e53e3e", color: "#fff", ...buttonStyle }}>Stop</button>
-            : <button onClick={start} style={{ background: "#38a169", color: "#fff", ...buttonStyle }}>Start</button>
+            ? <button onClick={stop} style={{ background: "#e53e3e", ...buttonStyle }}>Stop</button>
+            : <button onClick={start} style={{ background: "#38a169", ...buttonStyle }}>Start</button>
           }
         </header>
 
@@ -243,7 +229,7 @@ export default function App() {
           {transcript}
         </pre>
 
-        <div style={{ marginTop: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
           <button onClick={handleScore} style={buttonStyle}>🎯 Satisfaction Score</button>
           <button onClick={handleSummary} style={buttonStyle}>🧾 CSV Summary</button>
           <label style={{ ...buttonStyle, cursor: "pointer" }}>
@@ -253,9 +239,9 @@ export default function App() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          {score    !== null && <div>📊 Score: <strong>{score}</strong></div>}
-          {csvName  && <div>🧾 CSV: <code>{csvName}</code></div>}
-          {summary  && <div>📌 Summary: <em>{summary}</em></div>}
+          {score !== null && <div>📊 Score: <strong>{score}</strong></div>}
+          {csvName && <div>🧾 CSV: <code>{csvName}</code></div>}
+          {summary && <div>📌 Summary: <em>{summary}</em></div>}
           {pdfStatus && <div>📥 PDF Upload: <strong>{pdfStatus}</strong></div>}
         </div>
       </div>
