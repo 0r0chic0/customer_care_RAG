@@ -38,7 +38,7 @@ _Requires a mic-enabled browser (Chrome or Firefox)._
 
 1. Open your browser and navigate to:  
    **https://3.23.218.13.nip.io:5173/**
-2. Upload any PDF via **📄 Upload PDF** .  
+2. Upload any PDF via **📄 Upload PDF** . We have provided **customer_call_test.pdf** to test the app. 
 3. Click **Start**, and start a customer-agent dialogue, the model can succesfully tell who's who and generate tips based on the customer's need.  
 4. Verify:  
    - Transcript appears in the left panel.  
